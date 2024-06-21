@@ -305,24 +305,62 @@ void TargetInfo::storeDShared(RewriterBase &rewriter, Location loc, Value ptr,
   }
 
   auto vecTy = dyn_cast<VectorType>(val.getType());
+  Type elemTy;
   unsigned vec;
   unsigned bitwidth;
   if (vecTy) {
+    elemTy = vecTy.getElementType();
     vec = vecTy.getNumElements();
-    bitwidth = vecTy.getElementType().getIntOrFloatBitWidth();
+    bitwidth = elemTy.getIntOrFloatBitWidth();
     assert(bitwidth >= 8 && "can't load/store vectors with sub-byte elems");
   } else {
     vec = 1;
-    bitwidth = std::max(8u, val.getType().getIntOrFloatBitWidth());
+    elemTy = val.getType();
+    bitwidth = std::max(8u, elemTy.getIntOrFloatBitWidth());
   }
   assert(llvm::isPowerOf2_32(vec));
 
   // load/store ops only support v2 and v4.  If the vector width is larger than
-  // 4, split it into multiple ops.
-  if (vec > 4) {
-    // TODO(jlebar): Implement this once we can write a testcase.
-    assert(false && "vec > 4 not yet implemented");
+  // 4, we have two strategies for dealing with it.
+  //  1. If the element type is smaller than b32, store b32's instead.
+  //  2. Otherwise, split the store into multiple stores.
+  if (vec > 4 && bitwidth < 32) {
+    assert(llvm::isPowerOf2_32(vec));
+    int elemsPerPack = 32 / bitwidth;
+    SmallVector<Value> oldVals = unpackLLVector(loc, val, rewriter);
+
+    SmallVector<Value> newVals;
+    for (int i = 0; i < vec / elemsPerPack; i++) {
+      Value v = packLLVector(
+          loc, ArrayRef(oldVals).slice(i * elemsPerPack, elemsPerPack),
+          rewriter);
+      newVals.push_back(bitcast(v, i32_ty));
+    }
+    storeDShared(rewriter, loc, ptr, ctaId,
+                 packLLVector(loc, newVals, rewriter), pred);
+    return;
   }
+
+  if (vec * bitwidth > 128) {
+    assert(llvm::isPowerOf2_32(vec));
+    assert(bitwidth == 32 || bitwidth == 64);
+    int maxVec = 128 / bitwidth;
+
+    auto newVecTy = vec_ty(elemTy, maxVec);
+    SmallVector<Value> vals = unpackLLVector(loc, val, rewriter);
+    for (int i = 0; i < vec / maxVec; i++) {
+      auto newPtr = gep(ptr.getType(), elemTy, ptr, i32_val(i * maxVec),
+                        /*inbounds=*/true);
+      storeDShared(
+          rewriter, loc, newPtr, ctaId,
+          packLLVector(loc, ArrayRef(vals).slice(i * maxVec, maxVec), rewriter),
+          pred);
+    }
+    return;
+  }
+
+  assert(1 <= vec && vec <= 4);
+  assert(vec * bitwidth <= 128);
 
   // Get pointer to remote shared memory if needed.
   if (ctaId.has_value()) {
@@ -360,24 +398,61 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
   assert(ptrTy.getAddressSpace() == 3 && "Invalid addr space for load_dsmem");
 
   auto vecTy = dyn_cast<VectorType>(loadTy);
+  Type elemTy;
   unsigned vec;
-  unsigned bitwidth;
+  unsigned elemBitwidth;
   if (vecTy) {
+    elemTy = vecTy.getElementType();
     vec = vecTy.getNumElements();
-    bitwidth = vecTy.getElementType().getIntOrFloatBitWidth();
-    assert(bitwidth >= 8 && "can't load/store vectors with sub-byte elems");
+    elemBitwidth = elemTy.getIntOrFloatBitWidth();
+    assert(elemBitwidth >= 8 && "can't load/store vectors with sub-byte elems");
   } else {
     vec = 1;
-    bitwidth = std::max(8u, loadTy.getIntOrFloatBitWidth());
+    elemTy = loadTy;
+    elemBitwidth = std::max(8u, elemTy.getIntOrFloatBitWidth());
   }
   assert(llvm::isPowerOf2_32(vec));
 
   // load/store ops only support v2 and v4.  If the vector width is larger than
-  // 4, split it into multiple ops.
-  if (vec > 4) {
-    // TODO(jlebar): Implement this once we can write a testcase.
-    assert(false && "vec > 4 not yet implemented");
+  // 4, we have two strategies for dealing with it.
+  //  1. If the element type is smaller than b32, load b32's instead.
+  //  2. Otherwise, split the load into multiple loads.
+  if (vec > 4 && elemBitwidth < 32) {
+    int newVec = vec / (32 / elemBitwidth);
+    auto newVecTy = vec_ty(i32_ty, newVec);
+    auto res = loadDShared(rewriter, loc, ptr, ctaId, newVecTy, pred);
+
+    // Unpack the b32's into the original vector type.
+    SmallVector<Value> vals;
+    for (Value v : unpackLLVector(loc, res, rewriter)) {
+      Value vv = bitcast(v, vec_ty(elemTy, 32 / elemBitwidth));
+      for (Value vvv : unpackLLVector(loc, vv, rewriter)) {
+        vals.push_back(vvv);
+      }
+    }
+    return packLLVector(loc, vals, rewriter);
   }
+
+  if (vec * elemBitwidth > 128) {
+    assert(elemBitwidth == 32 || elemBitwidth == 64);
+    assert(llvm::isPowerOf2_32(vec));
+    int maxVec = 128 / elemBitwidth;
+
+    SmallVector<Value> vals;
+    for (int i = 0; i < vec / maxVec; i++) {
+      auto newPtr = gep(ptr.getType(), elemTy, ptr, i32_val(i * maxVec),
+                        /*inbounds=*/true);
+      auto newVal = loadDShared(rewriter, loc, newPtr, ctaId,
+                                vec_ty(elemTy, maxVec), pred);
+      for (Value v : unpackLLVector(loc, newVal, rewriter)) {
+        vals.push_back(v);
+      }
+    }
+    return packLLVector(loc, vals, rewriter);
+  }
+
+  assert(1 <= vec && vec <= 4);
+  assert(vec * elemBitwidth <= 128);
 
   // Get pointer to remote shared memory if needed.
   if (ctaId.has_value()) {
@@ -389,34 +464,25 @@ Value TargetInfo::loadDShared(RewriterBase &rewriter, Location loc, Value ptr,
                 ->o("shared::cta", ctaId.has_value())
                 .o("shared", !ctaId.has_value())
                 .v(vec, /*predicate=*/vec > 1)
-                .b(bitwidth);
+                .b(elemBitwidth);
 
-  std::string elemConstraint = "=" + getConstraintForBitwidth(bitwidth);
+  std::string elemConstraint = "=" + getConstraintForBitwidth(elemBitwidth);
   auto *outOpr = vec == 1 ? builder.newOperand(elemConstraint)
                           : builder.newListOperand(vec, elemConstraint);
   ld(outOpr, builder.newAddrOperand(ptr, "r")).predicate(pred, "b");
 
   Type resultTy =
-      vec == 1 ? Type(int_ty(bitwidth))
-               : Type(struct_ty(SmallVector<Type>(vec, int_ty(bitwidth))));
+      vec == 1 ? Type(int_ty(elemBitwidth))
+               : Type(struct_ty(SmallVector<Type>(vec, int_ty(elemBitwidth))));
   Value load = builder.launch(rewriter, loc, resultTy, /*hasSideEffects=*/true);
 
   SmallVector<Value> resultVals;
-  if (vec == 1) {
-    resultVals.push_back(load);
-  } else {
-    for (int i = 0; i < vec; i++) {
-      resultVals.push_back(extract_val(load, i));
-    }
+  for (Value v : unpackLLElements(loc, load, rewriter)) {
+    resultVals.push_back(bitcast(v, elemTy));
   }
 
   if (vecTy) {
-    Value ret = undef(loadTy);
-    for (int i = 0; i < vec; i++) {
-      ret = insert_element(ret, bitcast(resultVals[i], vecTy.getElementType()),
-                           i32_val(i));
-    }
-    return ret;
+    return packLLVector(loc, resultVals, rewriter);
   } else {
     assert(vec == 1);
     return bitcast(resultVals[0], loadTy);
