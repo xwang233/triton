@@ -148,6 +148,74 @@ private:
   };
 };
 
+class PCSamplingMetric : public Metric {
+public:
+  enum PCSamplingMetricKind : int {
+    NumSamples,
+    NumStallSamples,
+    StallBranchResolving,
+    StallNoInstruction,
+    StallShortScoreboard,
+    StallWait,
+    StallLongScoreboard,
+    StallTexThrottle,
+    StallBarrier,
+    StallMembar,
+    StallIMCMiss,
+    StallMIOThrottle,
+    StallMathPipeThrottle,
+    StallDrain,
+    StallLGThrottle,
+    StallNotSelected,
+    StallMisc,
+    StallDispatchStall,
+    StallSleeping,
+    Count,
+  };
+
+  PCSamplingMetric()
+      : Metric(MetricKind::Kernel, PCSamplingMetricKind::Count) {}
+
+  PCSamplingMetric(PCSamplingMetricKind kind, uint64_t samples,
+                   uint64_t stallSamples)
+      : PCSamplingMetric() {
+    this->values[kind] = stallSamples;
+    this->values[NumSamples] = samples;
+    this->values[NumStallSamples] = stallSamples;
+  }
+
+  virtual const std::string getName() const { return "PCSamplingMetric"; }
+
+  virtual const std::string getValueName(int valueId) const {
+    return VALUE_NAMES[valueId];
+  }
+
+  virtual bool isAggregable(int valueId) const { return true; }
+
+private:
+  const static inline std::string VALUE_NAMES[PCSamplingMetricKind::Count] = {
+      "NumSamples",
+      "NumStallSamples",
+      "StallBranchResolving",
+      "StallNoInstruction",
+      "StallShortScoreboard",
+      "StallWait",
+      "StallLongScoreboard",
+      "StallTexThrottle",
+      "StallBarrier",
+      "StallMembar",
+      "StallIMCMiss",
+      "StallMIOThrottle",
+      "StallMathPipeThrottle",
+      "StallDrain",
+      "StallLGThrottle",
+      "StallNotSelected",
+      "StallMisc",
+      "StallDispatchStall",
+      "StallSleeping",
+  };
+};
+
 } // namespace proton
 
 #endif // PROTON_DATA_METRIC_H_

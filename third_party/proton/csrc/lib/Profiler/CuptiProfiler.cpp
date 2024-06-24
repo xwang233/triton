@@ -1,4 +1,4 @@
-#include "Profiler/CuptiProfiler.h"
+#include "Profiler/Cupti/CuptiProfiler.h"
 #include "Context/Context.h"
 #include "Data/Metric.h"
 #include "Driver/Device.h"
