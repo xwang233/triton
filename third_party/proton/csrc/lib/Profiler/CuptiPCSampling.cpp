@@ -78,11 +78,60 @@ size_t matchStallReasonsToIndices(
   return numValidStalls;
 }
 
+void enablePCSampling(CUcontext context) {
+  CUpti_PCSamplingEnableParams params = {
+      .size = CUpti_PCSamplingEnableParamsSize,
+      .pPriv = NULL,
+      .ctx = context,
+  };
+  cupti::pcSamplingEnable<true>(&params);
+}
+
+void disablePCSampling(CUcontext context) {
+  CUpti_PCSamplingDisableParams params = {
+      .size = CUpti_PCSamplingDisableParamsSize,
+      .pPriv = NULL,
+      .ctx = context,
+  };
+  cupti::pcSamplingDisable<true>(&params);
+}
+
+void startPCSampling(CUcontext context) {
+  CUpti_PCSamplingStartParams params = {
+      .size = CUpti_PCSamplingStartParamsSize,
+      .pPriv = NULL,
+      .ctx = context,
+  };
+  cupti::pcSamplingStart<true>(&params);
+}
+
+void stopPCSampling(CUcontext context) {
+  CUpti_PCSamplingStopParams params = {
+      .size = CUpti_PCSamplingStopParamsSize,
+      .pPriv = NULL,
+      .ctx = context,
+  };
+  cupti::pcSamplingStop<true>(&params);
+}
+
+void getPCSamplingData(CUcontext context,
+                       CUpti_PCSamplingData *pcSamplingData) {
+  CUpti_PCSamplingGetDataParams params = {
+      .size = CUpti_PCSamplingGetDataParamsSize,
+      .pPriv = NULL,
+      .ctx = context,
+      .pcSamplingData = pcSamplingData,
+  };
+  cupti::pcSamplingGetData<true>(&params);
+}
+
 class ConfigureData {
 public:
   ConfigureData() = default;
 
   void initialize(CUcontext context, uint32_t frequency);
+
+  CUpti_PCSamplingData *getPCSamplingData() { return &pcSamplingData; }
 
   ~ConfigureData() {
     for (size_t i = 0; i < numStallReasons; i++)
@@ -108,6 +157,7 @@ private:
   // The number of PCs copied from the scratch buffer each time
   static constexpr uint32_t ScratchBufferPCCount = 4096;
 
+  bool initialized{false};
   CUcontext context{};
   uint32_t frequency{};
   uint32_t numStallReasons{};
@@ -173,10 +223,17 @@ void ConfigureData::configureStallReasons() {
 }
 
 void ConfigureData::initialize(CUcontext context, uint32_t frequency) {
+  if (this->initialized)
+    return;
+  this->initialized = true;
   this->context = context;
   this->frequency = frequency;
   configureSamplingPeriod(frequency);
   configureStallReasons();
+  configureHardwareBufferSize();
+  configureScratchBuffer();
+  configureSamplingBuffer();
+  configureStartStopControl();
 }
 
 } // namespace
@@ -190,22 +247,48 @@ struct CuptiPCSampling::CuptiPCSamplingPimpl {
 
   void finalize(void *context);
 
+  ConfigureData *getConfigureData(CUcontext context) {
+    uint32_t contextId;
+    cupti::getContextId<true>(context, &contextId);
+    return &contextIdToConfigureData[contextId];
+  }
+
   ThreadSafeMap<size_t, ConfigureData> contextIdToConfigureData;
 };
 
 void CuptiPCSampling::CuptiPCSamplingPimpl::initialize(void *context,
                                                        uint32_t frequency) {
-  CUcontext cuContext = static_cast<CUcontext>(context);
-  uint32_t contextId;
-  cupti::getContextId<true>(cuContext, &contextId);
-  if (contextIdToConfigureData.contain(contextId))
-    return;
-  contextIdToConfigureData[contextId].initialize(cuContext, frequency);
+  auto cuContext = static_cast<CUcontext>(context);
+  auto *configureData = getConfigureData(cuContext);
+  configureData->initialize(cuContext, frequency);
+  enablePCSampling(cuContext);
 }
 
-void CuptiPCSampling::CuptiPCSamplingPimpl::start(void *context) {}
+void CuptiPCSampling::CuptiPCSamplingPimpl::start(void *context) {
+  auto cuContext = static_cast<CUcontext>(context);
+  auto *configureData = getConfigureData(cuContext);
+  startPCSampling(cuContext);
+}
 
-void CuptiPCSampling::CuptiPCSamplingPimpl::stop(void *context) {}
+void CuptiPCSampling::CuptiPCSamplingPimpl::stop(void *context) {
+  auto cuContext = static_cast<CUcontext>(context);
+  auto *configureData = getConfigureData(cuContext);
+  stopPCSampling(cuContext);
+  auto *pcSamplingData = configureData->getPCSamplingData();
+  while ((pcSamplingData->totalNumPcs > 0 ||
+          pcSamplingData->remainingNumPcs > 0)) {
+    // Handle data
+    for (size_t i = 0; i < pcSamplingData->totalNumPcs; ++i) {
+      auto *pcData = pcSamplingData->pPcData;
+    }
+    // Get next data
+    getPCSamplingData(cuContext, pcSamplingData);
+  }
+}
+
+void CuptiPCSampling::CuptiPCSamplingPimpl::finalize(void *context) {
+  disablePCSampling(static_cast<CUcontext>(context));
+}
 
 void CuptiPCSampling::initialize(void *context, uint32_t frequency) {
   pImpl->initialize(context, frequency);
@@ -214,5 +297,7 @@ void CuptiPCSampling::initialize(void *context, uint32_t frequency) {
 void CuptiPCSampling::start(void *context) { pImpl->start(context); }
 
 void CuptiPCSampling::stop(void *context) { pImpl->stop(context); }
+
+void CuptiPCSampling::finalize(void *context) { pImpl->finalize(context); }
 
 } // namespace proton
