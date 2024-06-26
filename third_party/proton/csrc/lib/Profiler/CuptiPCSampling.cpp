@@ -11,6 +11,17 @@ namespace proton {
 
 namespace {
 
+uint64_t getCubinCrc(const char *cubin, size_t size) {
+  CUpti_GetCubinCrcParams cubinCrcParams = {
+      .size = CUpti_GetCubinCrcParamsSize,
+      .cubinSize = size,
+      .cubin = cubin,
+      .cubinCrc = 0,
+  };
+  cupti::getCubinCrc<true>(&cubinCrcParams);
+  return cubinCrcParams.cubinCrc;
+}
+
 size_t getNumStallReasons(CUcontext context) {
   size_t numStallReasons = 0;
   CUpti_PCSamplingGetNumStallReasonsParams numStallReasonsParams = {
@@ -20,6 +31,25 @@ size_t getNumStallReasons(CUcontext context) {
       .numStallReasons = &numStallReasons};
   cupti::pcSamplingGetNumStallReasons<true>(&numStallReasonsParams);
   return numStallReasons;
+}
+
+std::tuple<uint32_t, const char *, const char *>
+getSassToSourceCorrelation(const char *functionName, uint64_t pcOffset,
+                           const char *cubin, size_t cubinSize) {
+  CUpti_GetSassToSourceCorrelationParams sassToSourceParams = {
+      .size = CUpti_GetSassToSourceCorrelationParamsSize,
+      .cubin = cubin,
+      .functionName = functionName,
+      .cubinSize = cubinSize,
+      .lineNumber = 0,
+      .pcOffset = pcOffset,
+      .fileName = nullptr,
+      .dirName = nullptr,
+  };
+  cupti::getSassToSourceCorrelation<true>(&sassToSourceParams);
+  return std::make_tuple(sassToSourceParams.lineNumber,
+                         sassToSourceParams.fileName,
+                         sassToSourceParams.dirName);
 }
 
 std::pair<char **, uint32_t *>
@@ -125,179 +155,200 @@ void getPCSamplingData(CUcontext context,
   cupti::pcSamplingGetData<true>(&params);
 }
 
-class ConfigureData {
-public:
-  ConfigureData() = default;
-
-  void initialize(CUcontext context, uint32_t frequency);
-
-  CUpti_PCSamplingData *getPCSamplingData() { return &pcSamplingData; }
-
-  ~ConfigureData() {
-    for (size_t i = 0; i < numStallReasons; i++)
-      std::free(stallReasonNames[i]);
-    if (stallReasonNames)
-      std::free(stallReasonNames);
-    if (stallReasonIndices)
-      std::free(stallReasonIndices);
-  }
-
-private:
-  void configureStallReasons();
-  void configureSamplingPeriod(uint32_t frequency);
-  void configureSamplingBuffer();
-  void configureScratchBuffer();
-  void configureHardwareBufferSize();
-  void configureStartStopControl();
-
-  // The amount of data reserved on the GPU
-  static constexpr uint32_t HardwareBufferSize = 512 * 1024 * 1024;
-  // The amount of data copied from the hardware buffer each time
-  static constexpr uint32_t ScratchBufferSize = 16 * 1024 * 1024;
-  // The number of PCs copied from the scratch buffer each time
-  static constexpr uint32_t ScratchBufferPCCount = 4096;
-
-  bool initialized{false};
-  CUcontext context{};
-  uint32_t frequency{};
-  uint32_t numStallReasons{};
-  uint32_t validStallReasons{};
-  char **stallReasonNames{};
-  uint32_t *stallReasonIndices{};
-  std::map<size_t, size_t> stallReasonIndexToMetricIndex{};
-  CUpti_PCSamplingData pcSamplingData{};
-  CUpti_PCSamplingConfigurationInfo stallReasonInfo{};
-  CUpti_PCSamplingConfigurationInfo samplingPeriodInfo{};
-};
-
-void ConfigureData::configureSamplingPeriod(uint32_t frequency) {
-  this->frequency = frequency;
-  samplingPeriodInfo.attributeType =
-      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_SAMPLING_PERIOD;
-  samplingPeriodInfo.attributeData.samplingPeriodData.samplingPeriod =
-      frequency;
-}
-
-void ConfigureData::configureSamplingBuffer() {
-  samplingPeriodInfo.attributeType =
-      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_SAMPLING_DATA_BUFFER;
-  samplingPeriodInfo.attributeData.samplingDataBufferData.samplingDataBuffer =
-      0;
-}
-
-void ConfigureData::configureScratchBuffer() {
-  samplingPeriodInfo.attributeType =
-      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_SCRATCH_BUFFER_SIZE;
-  samplingPeriodInfo.attributeData.scratchBufferSizeData.scratchBufferSize =
-      ScratchBufferSize;
-}
-
-void ConfigureData::configureHardwareBufferSize() {
-  samplingPeriodInfo.attributeType =
-      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_HARDWARE_BUFFER_SIZE;
-  samplingPeriodInfo.attributeData.hardwareBufferSizeData.hardwareBufferSize =
-      HardwareBufferSize;
-  0;
-}
-
-void ConfigureData::configureStartStopControl() {
-  samplingPeriodInfo.attributeType =
-      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_ENABLE_START_STOP_CONTROL;
-  samplingPeriodInfo.attributeData.enableStartStopControlData
-      .enableStartStopControl = true;
-}
-
-void ConfigureData::configureStallReasons() {
-  numStallReasons = getNumStallReasons(context);
-  std::tie(this->stallReasonNames, this->stallReasonIndices) =
-      getStallReasonNamesAndIndices(context, numStallReasons);
-  validStallReasons = matchStallReasonsToIndices(
-      numStallReasons, stallReasonNames, stallReasonIndices,
-      stallReasonIndexToMetricIndex);
-  stallReasonInfo.attributeType =
-      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_STALL_REASON;
-  stallReasonInfo.attributeData.stallReasonData.stallReasonCount =
-      validStallReasons;
-  stallReasonInfo.attributeData.stallReasonData.pStallReasonIndex =
-      stallReasonIndices;
-}
-
-void ConfigureData::initialize(CUcontext context, uint32_t frequency) {
-  if (this->initialized)
-    return;
-  this->initialized = true;
-  this->context = context;
-  this->frequency = frequency;
-  configureSamplingPeriod(frequency);
-  configureStallReasons();
-  configureHardwareBufferSize();
-  configureScratchBuffer();
-  configureSamplingBuffer();
-  configureStartStopControl();
+void setConfigurationAttribute(
+    CUcontext context,
+    std::vector<CUpti_PCSamplingConfigurationInfo> &configurationInfos) {
+  CUpti_PCSamplingConfigurationInfoParams infoParams = {
+      .size = CUpti_PCSamplingConfigurationInfoParamsSize,
+      .pPriv = NULL,
+      .ctx = context,
+      .numAttributes = configurationInfos.size(),
+      .pPCSamplingConfigurationInfo = configurationInfos.data(),
+  };
+  cupti::pcSamplingSetConfigurationAttribute<true>(&infoParams);
 }
 
 } // namespace
 
-struct CuptiPCSampling::CuptiPCSamplingPimpl {
-  void initialize(void *context, uint32_t frequency);
-
-  void start(void *context);
-
-  void stop(void *context);
-
-  void finalize(void *context);
-
-  ConfigureData *getConfigureData(CUcontext context) {
-    uint32_t contextId;
-    cupti::getContextId<true>(context, &contextId);
-    return &contextIdToConfigureData[contextId];
-  }
-
-  ThreadSafeMap<size_t, ConfigureData> contextIdToConfigureData;
-};
-
-void CuptiPCSampling::CuptiPCSamplingPimpl::initialize(void *context,
-                                                       uint32_t frequency) {
-  auto cuContext = static_cast<CUcontext>(context);
-  auto *configureData = getConfigureData(cuContext);
-  configureData->initialize(cuContext, frequency);
-  enablePCSampling(cuContext);
+CUpti_PCSamplingConfigurationInfo ConfigureData::configureStallReasons() {
+  numStallReasons = getNumStallReasons(context);
+  std::tie(this->stallReasonNames, this->stallReasonIndices) =
+      getStallReasonNamesAndIndices(context, numStallReasons);
+  numValidStallReasons = matchStallReasonsToIndices(
+      numStallReasons, stallReasonNames, stallReasonIndices,
+      stallReasonIndexToMetricIndex);
+  CUpti_PCSamplingConfigurationInfo stallReasonInfo{};
+  stallReasonInfo.attributeType =
+      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_STALL_REASON;
+  stallReasonInfo.attributeData.stallReasonData.stallReasonCount =
+      numValidStallReasons;
+  stallReasonInfo.attributeData.stallReasonData.pStallReasonIndex =
+      stallReasonIndices;
+  return stallReasonInfo;
 }
 
-void CuptiPCSampling::CuptiPCSamplingPimpl::start(void *context) {
-  auto cuContext = static_cast<CUcontext>(context);
-  auto *configureData = getConfigureData(cuContext);
-  startPCSampling(cuContext);
+CUpti_PCSamplingConfigurationInfo ConfigureData::configureSamplingPeriod() {
+  CUpti_PCSamplingConfigurationInfo samplingPeriodInfo{};
+  samplingPeriodInfo.attributeType =
+      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_SAMPLING_PERIOD;
+  samplingPeriodInfo.attributeData.samplingPeriodData.samplingPeriod =
+      DefaultFrequency;
+  return samplingPeriodInfo;
 }
 
-void CuptiPCSampling::CuptiPCSamplingPimpl::stop(void *context) {
-  auto cuContext = static_cast<CUcontext>(context);
-  auto *configureData = getConfigureData(cuContext);
-  stopPCSampling(cuContext);
-  auto *pcSamplingData = configureData->getPCSamplingData();
+CUpti_PCSamplingConfigurationInfo ConfigureData::configureSamplingBuffer() {
+  CUpti_PCSamplingConfigurationInfo samplingPeriodInfo{};
+  samplingPeriodInfo.attributeType =
+      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_SAMPLING_DATA_BUFFER;
+  samplingPeriodInfo.attributeData.samplingDataBufferData.samplingDataBuffer =
+      &this->pcSamplingData;
+  return samplingPeriodInfo;
+}
+
+CUpti_PCSamplingConfigurationInfo ConfigureData::configureScratchBuffer() {
+  CUpti_PCSamplingConfigurationInfo scratchBufferInfo{};
+  scratchBufferInfo.attributeType =
+      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_SCRATCH_BUFFER_SIZE;
+  scratchBufferInfo.attributeData.scratchBufferSizeData.scratchBufferSize =
+      ScratchBufferSize;
+  return scratchBufferInfo;
+}
+
+CUpti_PCSamplingConfigurationInfo ConfigureData::configureHardwareBufferSize() {
+  CUpti_PCSamplingConfigurationInfo hardwareBufferInfo{};
+  hardwareBufferInfo.attributeType =
+      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_HARDWARE_BUFFER_SIZE;
+  hardwareBufferInfo.attributeData.hardwareBufferSizeData.hardwareBufferSize =
+      HardwareBufferSize;
+  return hardwareBufferInfo;
+}
+
+CUpti_PCSamplingConfigurationInfo ConfigureData::configureStartStopControl() {
+  CUpti_PCSamplingConfigurationInfo startStopControlInfo{};
+  startStopControlInfo.attributeType =
+      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_ENABLE_START_STOP_CONTROL;
+  startStopControlInfo.attributeData.enableStartStopControlData
+      .enableStartStopControl = true;
+  return startStopControlInfo;
+}
+
+CUpti_PCSamplingConfigurationInfo ConfigureData::configureCollectionMode() {
+  CUpti_PCSamplingConfigurationInfo collectionModeInfo{};
+  collectionModeInfo.attributeType =
+      CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_COLLECTION_MODE;
+  collectionModeInfo.attributeData.collectionModeData.collectionMode =
+      CUPTI_PC_SAMPLING_COLLECTION_MODE_CONTINUOUS;
+  return collectionModeInfo;
+}
+
+void ConfigureData::initialize(CUcontext context) {
+  if (this->initialized)
+    return;
+  this->initialized = true;
+  this->context = context;
+  auto stallReasonsInfo = configureStallReasons();
+  auto samplingPeriodInfo = configureSamplingPeriod();
+  auto hardwareBufferInfo = configureHardwareBufferSize();
+  auto scratchBufferInfo = configureScratchBuffer();
+  auto samplingBufferInfo = configureSamplingBuffer();
+  auto startStopControlInfo = configureStartStopControl();
+  auto collectionModeInfo = configureCollectionMode();
+  std::vector<CUpti_PCSamplingConfigurationInfo> configurationInfos = {
+      stallReasonsInfo,   samplingPeriodInfo,   scratchBufferInfo,
+      hardwareBufferInfo, startStopControlInfo, collectionModeInfo};
+  setConfigurationAttribute(context, configurationInfos);
+}
+
+ConfigureData *CuptiPCSampling::getConfigureData(CUcontext context) {
+  uint32_t contextId;
+  cupti::getContextId<true>(context, &contextId);
+  return &contextIdToConfigureData[contextId];
+}
+
+CubinData *CuptiPCSampling::getCubinData(uint64_t cubinCrc) {
+  return &cubinCrcToCubinData[cubinCrc];
+}
+
+void CuptiPCSampling::initialize(CUcontext context) {
+  auto *configureData = getConfigureData(context);
+  configureData->initialize(context);
+  enablePCSampling(context);
+}
+
+void CuptiPCSampling::start(CUcontext context) {
+  auto *configureData = getConfigureData(context);
+  startPCSampling(context);
+}
+
+void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
+                                            uint64_t externId) {
+  auto *pcSamplingData = &configureData->pcSamplingData;
+  auto &profiler = CuptiProfiler::instance();
+  auto dataSet = profiler.getDataSet();
   while ((pcSamplingData->totalNumPcs > 0 ||
           pcSamplingData->remainingNumPcs > 0)) {
     // Handle data
     for (size_t i = 0; i < pcSamplingData->totalNumPcs; ++i) {
       auto *pcData = pcSamplingData->pPcData;
+      auto *cubinData = getCubinData(pcData->cubinCrc);
+      auto key =
+          CubinData::LineInfoKey{pcData->functionIndex, pcData->pcOffset};
+      if (cubinData->lineInfo.find(key) == cubinData->lineInfo.end()) {
+        auto [lineNumber, fileName, dirName] =
+            getSassToSourceCorrelation(pcData->functionName, pcData->pcOffset,
+                                       cubinData->cubin, cubinData->cubinSize);
+        cubinData->lineInfo[key] = CubinData::LineInfoValue{
+            lineNumber, pcData->functionName,
+            std::string(dirName) + "/" + std::string(fileName)};
+      }
+      auto &lineInfo = cubinData->lineInfo[key];
+      for (size_t j = 0; j < pcData->stallReasonCount; ++j) {
+        auto *stallReason = &pcData->stallReason[j];
+        for (auto *data : dataSet) {
+          auto scopeId = data->addScope(externId, lineInfo.functionName);
+          auto metricKind = configureData->stallReasonIndexToMetricIndex
+                                [stallReason->pcSamplingStallReasonIndex];
+          auto samples = stallReason->samples;
+          auto stallSamples = configureData->nonIssueStallReasonIndices.count(
+                                  stallReason->pcSamplingStallReasonIndex)
+                                  ? samples
+                                  : 0;
+          auto metric = std::make_shared<PCSamplingMetric>(metricKind, samples,
+                                                           stallSamples);
+          data->addMetric(scopeId, metric);
+        }
+      }
     }
     // Get next data
-    getPCSamplingData(cuContext, pcSamplingData);
+    getPCSamplingData(configureData->context, pcSamplingData);
   }
 }
 
-void CuptiPCSampling::CuptiPCSamplingPimpl::finalize(void *context) {
-  disablePCSampling(static_cast<CUcontext>(context));
+void CuptiPCSampling::stop(CUcontext context, uint64_t externId) {
+  stopPCSampling(context);
+  auto *configureData = getConfigureData(context);
+  processPCSamplingData(configureData, externId);
 }
 
-void CuptiPCSampling::initialize(void *context, uint32_t frequency) {
-  pImpl->initialize(context, frequency);
+void CuptiPCSampling::finalize(CUcontext context) {
+  disablePCSampling(context);
 }
 
-void CuptiPCSampling::start(void *context) { pImpl->start(context); }
+void CuptiPCSampling::loadModule(CUpti_ResourceData *resourceData) {
+  auto *cubinResource =
+      static_cast<CUpti_ModuleResourceData *>(resourceData->resourceDescriptor);
+  auto cubinCrc = getCubinCrc(cubinResource->pCubin, cubinResource->cubinSize);
+  auto *cubinData = getCubinData(cubinCrc);
+  cubinData->cubinCrc = cubinCrc;
+  cubinData->cubinSize = cubinResource->cubinSize;
+  cubinData->cubin = cubinResource->pCubin;
+}
 
-void CuptiPCSampling::stop(void *context) { pImpl->stop(context); }
-
-void CuptiPCSampling::finalize(void *context) { pImpl->finalize(context); }
+void CuptiPCSampling::unloadModule(CUpti_ResourceData *resourceData) {
+  auto *cubinResource =
+      static_cast<CUpti_ModuleResourceData *>(resourceData->resourceDescriptor);
+  auto cubinCrc = getCubinCrc(cubinResource->pCubin, cubinResource->cubinSize);
+  cubinCrcToCubinData.erase(cubinCrc);
+}
 
 } // namespace proton

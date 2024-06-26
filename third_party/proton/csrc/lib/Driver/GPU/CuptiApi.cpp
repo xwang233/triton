@@ -73,6 +73,13 @@ DEFINE_DISPATCH(ExternLibCupti, getGraphExecId, cuptiGetGraphExecId,
 DEFINE_DISPATCH(ExternLibCupti, getGraphId, cuptiGetGraphId, CUgraph,
                 uint32_t *);
 
+DEFINE_DISPATCH(ExternLibCupti, getCubinCrc, cuptiGetCubinCrc,
+                CUpti_GetCubinCrcParams *);
+
+DEFINE_DISPATCH(ExternLibCupti, getSassToSourceCorrelation,
+                cuptiGetSassToSourceCorrelation,
+                CUpti_GetSassToSourceCorrelationParams *);
+
 DEFINE_DISPATCH(ExternLibCupti, pcSamplingGetNumStallReasons,
                 cuptiPCSamplingGetNumStallReasons,
                 CUpti_PCSamplingGetNumStallReasonsParams *);

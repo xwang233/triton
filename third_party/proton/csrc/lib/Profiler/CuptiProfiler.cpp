@@ -4,6 +4,7 @@
 #include "Driver/Device.h"
 #include "Driver/GPU/CudaApi.h"
 #include "Driver/GPU/CuptiApi.h"
+#include "Profiler/Cupti/CuptiPCSampling.h"
 #include "Utility/Map.h"
 
 #include <cstdlib>
@@ -162,6 +163,16 @@ void setGraphCallbacks(CUpti_SubscriberHandle subscriber, bool enable) {
 #undef CALLBACK_ENABLE
 }
 
+void setResourceCallbacks(CUpti_SubscriberHandle subscriber, bool enable) {
+#define CALLBACK_ENABLE(id)                                                    \
+  cupti::enableCallback<true>(static_cast<uint32_t>(enable), subscriber,       \
+                              CUPTI_CB_DOMAIN_RESOURCE, id)
+
+  CALLBACK_ENABLE(CUPTI_CBID_RESOURCE_MODULE_LOADED);
+  CALLBACK_ENABLE(CUPTI_CBID_RESOURCE_MODULE_UNLOAD_STARTING);
+#undef CALLBACK_ENABLE
+}
+
 } // namespace
 
 struct CuptiProfiler::CuptiProfilerPimpl
@@ -186,6 +197,7 @@ struct CuptiProfiler::CuptiProfilerPimpl
   static constexpr size_t AttributeSize = sizeof(size_t);
 
   CUpti_SubscriberHandle subscriber{};
+  CuptiPCSampling pcSampling;
 
   ThreadSafeMap<uint32_t, size_t, std::unordered_map<uint32_t, size_t>>
       graphIdToNumInstances;
@@ -241,29 +253,35 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
   if (domain == CUPTI_CB_DOMAIN_RESOURCE) {
     auto *resourceData =
         reinterpret_cast<CUpti_ResourceData *>(const_cast<void *>(cbData));
-    auto *graphData =
-        reinterpret_cast<CUpti_GraphData *>(resourceData->resourceDescriptor);
     auto *pImpl = dynamic_cast<CuptiProfilerPimpl *>(profiler.pImpl.get());
-    uint32_t graphId = 0;
-    uint32_t graphExecId = 0;
-    if (graphData->graph)
-      cupti::getGraphId<true>(graphData->graph, &graphId);
-    if (graphData->graphExec)
-      cupti::getGraphExecId<true>(graphData->graphExec, &graphExecId);
-    if (cbId == CUPTI_CBID_RESOURCE_GRAPHNODE_CREATED ||
-        cbId == CUPTI_CBID_RESOURCE_GRAPHNODE_CLONED) {
-      if (!pImpl->graphIdToNumInstances.contain(graphId))
-        pImpl->graphIdToNumInstances[graphId] = 1;
-      else
-        pImpl->graphIdToNumInstances[graphId]++;
-    } else if (cbId == CUPTI_CBID_RESOURCE_GRAPHNODE_DESTROY_STARTING) {
-      pImpl->graphIdToNumInstances[graphId]--;
-    } else if (cbId == CUPTI_CBID_RESOURCE_GRAPHEXEC_CREATED) {
-      pImpl->graphExecIdToGraphId[graphExecId] = graphId;
-    } else if (cbId == CUPTI_CBID_RESOURCE_GRAPHEXEC_DESTROY_STARTING) {
-      pImpl->graphExecIdToGraphId.erase(graphExecId);
-    } else if (cbId == CUPTI_CBID_RESOURCE_GRAPH_DESTROY_STARTING) {
-      pImpl->graphIdToNumInstances.erase(graphId);
+    if (cbId == CUPTI_CBID_RESOURCE_MODULE_LOADED) {
+      pImpl->pcSampling.loadModule(resourceData);
+    } else if (cbId == CUPTI_CBID_RESOURCE_MODULE_UNLOAD_STARTING) {
+      pImpl->pcSampling.unloadModule(resourceData);
+    } else {
+      auto *graphData =
+          reinterpret_cast<CUpti_GraphData *>(resourceData->resourceDescriptor);
+      uint32_t graphId = 0;
+      uint32_t graphExecId = 0;
+      if (graphData->graph)
+        cupti::getGraphId<true>(graphData->graph, &graphId);
+      if (graphData->graphExec)
+        cupti::getGraphExecId<true>(graphData->graphExec, &graphExecId);
+      if (cbId == CUPTI_CBID_RESOURCE_GRAPHNODE_CREATED ||
+          cbId == CUPTI_CBID_RESOURCE_GRAPHNODE_CLONED) {
+        if (!pImpl->graphIdToNumInstances.contain(graphId))
+          pImpl->graphIdToNumInstances[graphId] = 1;
+        else
+          pImpl->graphIdToNumInstances[graphId]++;
+      } else if (cbId == CUPTI_CBID_RESOURCE_GRAPHNODE_DESTROY_STARTING) {
+        pImpl->graphIdToNumInstances[graphId]--;
+      } else if (cbId == CUPTI_CBID_RESOURCE_GRAPHEXEC_CREATED) {
+        pImpl->graphExecIdToGraphId[graphExecId] = graphId;
+      } else if (cbId == CUPTI_CBID_RESOURCE_GRAPHEXEC_DESTROY_STARTING) {
+        pImpl->graphExecIdToGraphId.erase(graphExecId);
+      } else if (cbId == CUPTI_CBID_RESOURCE_GRAPH_DESTROY_STARTING) {
+        pImpl->graphIdToNumInstances.erase(graphId);
+      }
     }
   } else {
     const CUpti_CallbackData *callbackData =
@@ -313,6 +331,7 @@ void CuptiProfiler::CuptiProfilerPimpl::doStart() {
   setGraphCallbacks(subscriber, /*enable=*/true);
   setRuntimeCallbacks(subscriber, /*enable=*/true);
   setDriverCallbacks(subscriber, /*enable=*/true);
+  setResourceCallbacks(subscriber, /*enable=*/true);
 }
 
 void CuptiProfiler::CuptiProfilerPimpl::doFlush() {
@@ -345,6 +364,7 @@ void CuptiProfiler::CuptiProfilerPimpl::doStop() {
   setGraphCallbacks(subscriber, /*enable=*/false);
   setRuntimeCallbacks(subscriber, /*enable=*/false);
   setDriverCallbacks(subscriber, /*enable=*/false);
+  setResourceCallbacks(subscriber, /*enable=*/false);
   cupti::unsubscribe<true>(subscriber);
   cupti::finalize<true>();
 }

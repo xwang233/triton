@@ -71,6 +71,13 @@ template <bool CheckSuccess>
 CUptiResult getGraphId(CUgraph graph, uint32_t *pId);
 
 template <bool CheckSuccess>
+CUptiResult getCubinCrc(CUpti_GetCubinCrcParams *pParams);
+
+template <bool CheckSuccess>
+CUptiResult
+getSassToSourceCorrelation(CUpti_GetSassToSourceCorrelationParams *pParams);
+
+template <bool CheckSuccess>
 CUptiResult
 pcSamplingGetNumStallReasons(CUpti_PCSamplingGetNumStallReasonsParams *pParams);
 
