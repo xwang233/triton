@@ -276,8 +276,12 @@ void CuptiPCSampling::initialize(CUcontext context) {
 }
 
 void CuptiPCSampling::start(CUcontext context) {
+  std::unique_lock<std::mutex> lock(pcSamplingMutex);
+  if (pcSamplingStarted)
+    return;
   auto *configureData = getConfigureData(context);
   startPCSampling(context);
+  pcSamplingStarted = true;
 }
 
 void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
@@ -325,9 +329,13 @@ void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
 }
 
 void CuptiPCSampling::stop(CUcontext context, uint64_t externId) {
+  std::unique_lock<std::mutex> lock(pcSamplingMutex);
+  if (!pcSamplingStarted)
+    return;
   stopPCSampling(context);
   auto *configureData = getConfigureData(context);
   processPCSamplingData(configureData, externId);
+  pcSamplingStarted = false;
 }
 
 void CuptiPCSampling::finalize(CUcontext context) {

@@ -6,6 +6,7 @@
 #include "Driver/GPU/CuptiApi.h"
 #include "Utility/Map.h"
 #include "Utility/Singleton.h"
+#include <mutex>
 
 namespace proton {
 
@@ -104,6 +105,9 @@ private:
 
   ThreadSafeMap<size_t, ConfigureData> contextIdToConfigureData;
   ThreadSafeMap<size_t, CubinData> cubinCrcToCubinData;
+
+  bool pcSamplingStarted{false};
+  std::mutex pcSamplingMutex;
 };
 
 } // namespace proton

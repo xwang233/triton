@@ -286,6 +286,7 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
   } else {
     const CUpti_CallbackData *callbackData =
         reinterpret_cast<const CUpti_CallbackData *>(cbData);
+    auto *pImpl = dynamic_cast<CuptiProfilerPimpl *>(profiler.pImpl.get());
     if (callbackData->callbackSite == CUPTI_API_ENTER) {
       auto scopeId = Scope::getNewScopeId();
       threadState.record(scopeId);
@@ -293,7 +294,6 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
       size_t numInstances = 1;
       if (cbId == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch ||
           cbId == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz) {
-        auto *pImpl = dynamic_cast<CuptiProfilerPimpl *>(profiler.pImpl.get());
         auto graphExec = reinterpret_cast<const cuGraphLaunch_params *>(
                              callbackData->functionParams)
                              ->hGraph;
@@ -316,7 +316,15 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
                     << std::endl;
       }
       profiler.correlation.correlate(callbackData->correlationId, numInstances);
+      if (profiler.isPCSamplingEnabled())
+        pImpl->pcSampling.start(callbackData->context);
     } else if (callbackData->callbackSite == CUPTI_API_EXIT) {
+      if (profiler.isPCSamplingEnabled()) {
+        auto scopeId = profiler.correlation.externIdQueue.empty()
+                           ? Scope::DummyScopeId
+                           : profiler.correlation.externIdQueue.back();
+        pImpl->pcSampling.stop(callbackData->context, scopeId);
+      }
       threadState.exitOp();
       profiler.correlation.submit(callbackData->correlationId);
     }
@@ -331,7 +339,9 @@ void CuptiProfiler::CuptiProfilerPimpl::doStart() {
   setGraphCallbacks(subscriber, /*enable=*/true);
   setRuntimeCallbacks(subscriber, /*enable=*/true);
   setDriverCallbacks(subscriber, /*enable=*/true);
-  setResourceCallbacks(subscriber, /*enable=*/true);
+  if (profiler.isPCSamplingEnabled()) {
+    setResourceCallbacks(subscriber, /*enable=*/true);
+  }
 }
 
 void CuptiProfiler::CuptiProfilerPimpl::doFlush() {
@@ -364,7 +374,8 @@ void CuptiProfiler::CuptiProfilerPimpl::doStop() {
   setGraphCallbacks(subscriber, /*enable=*/false);
   setRuntimeCallbacks(subscriber, /*enable=*/false);
   setDriverCallbacks(subscriber, /*enable=*/false);
-  setResourceCallbacks(subscriber, /*enable=*/false);
+  if (profiler.isPCSamplingEnabled())
+    setResourceCallbacks(subscriber, /*enable=*/false);
   cupti::unsubscribe<true>(subscriber);
   cupti::finalize<true>();
 }
