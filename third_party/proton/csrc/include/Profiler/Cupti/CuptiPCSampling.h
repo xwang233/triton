@@ -6,6 +6,7 @@
 #include "Driver/GPU/CuptiApi.h"
 #include "Utility/Map.h"
 #include "Utility/Singleton.h"
+#include <atomic>
 #include <mutex>
 
 namespace proton {
@@ -74,7 +75,7 @@ struct ConfigureData {
   char **stallReasonNames{};
   uint32_t *stallReasonIndices{};
   std::map<size_t, size_t> stallReasonIndexToMetricIndex{};
-  std::set<size_t> nonIssueStallReasonIndices{};
+  std::set<size_t> notIssuedStallReasonIndices{};
   CUpti_PCSamplingData pcSamplingData{};
 };
 
@@ -88,7 +89,7 @@ public:
 
   void start(CUcontext context);
 
-  void stop(CUcontext context, uint64_t externId);
+  void stop(CUcontext context, uint64_t externId, bool isAPI);
 
   void finalize(CUcontext context);
 
@@ -101,13 +102,13 @@ private:
 
   CubinData *getCubinData(uint64_t cubinCrc);
 
-  void processPCSamplingData(ConfigureData *configureData, uint64_t externId);
+  void processPCSamplingData(ConfigureData *configureData, uint64_t externId,
+                             bool isAPI);
 
   ThreadSafeMap<size_t, ConfigureData> contextIdToConfigureData;
   ThreadSafeMap<size_t, CubinData> cubinCrcToCubinData;
 
-  bool pcSamplingStarted{false};
-  std::mutex pcSamplingMutex;
+  std::atomic<bool> pcSamplingStarted{false};
 };
 
 } // namespace proton

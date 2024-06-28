@@ -208,7 +208,7 @@ struct CuptiProfiler::CuptiProfilerPimpl
 void CuptiProfiler::CuptiProfilerPimpl::allocBuffer(uint8_t **buffer,
                                                     size_t *bufferSize,
                                                     size_t *maxNumRecords) {
-  *buffer = reinterpret_cast<uint8_t *>(aligned_alloc(AlignSize, BufferSize));
+  *buffer = static_cast<uint8_t *>(aligned_alloc(AlignSize, BufferSize));
   if (*buffer == nullptr) {
     throw std::runtime_error("aligned_alloc failed");
   }
@@ -252,7 +252,7 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
   CuptiProfiler &profiler = threadState.profiler;
   if (domain == CUPTI_CB_DOMAIN_RESOURCE) {
     auto *resourceData =
-        reinterpret_cast<CUpti_ResourceData *>(const_cast<void *>(cbData));
+        static_cast<CUpti_ResourceData *>(const_cast<void *>(cbData));
     auto *pImpl = dynamic_cast<CuptiProfilerPimpl *>(profiler.pImpl.get());
     if (cbId == CUPTI_CBID_RESOURCE_MODULE_LOADED) {
       pImpl->pcSampling.loadModule(resourceData);
@@ -260,7 +260,7 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
       pImpl->pcSampling.unloadModule(resourceData);
     } else {
       auto *graphData =
-          reinterpret_cast<CUpti_GraphData *>(resourceData->resourceDescriptor);
+          static_cast<CUpti_GraphData *>(resourceData->resourceDescriptor);
       uint32_t graphId = 0;
       uint32_t graphExecId = 0;
       if (graphData->graph)
@@ -285,7 +285,7 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
     }
   } else {
     const CUpti_CallbackData *callbackData =
-        reinterpret_cast<const CUpti_CallbackData *>(cbData);
+        static_cast<const CUpti_CallbackData *>(cbData);
     auto *pImpl = dynamic_cast<CuptiProfilerPimpl *>(profiler.pImpl.get());
     if (callbackData->callbackSite == CUPTI_API_ENTER) {
       auto scopeId = Scope::getNewScopeId();
@@ -294,7 +294,7 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
       size_t numInstances = 1;
       if (cbId == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch ||
           cbId == CUPTI_DRIVER_TRACE_CBID_cuGraphLaunch_ptsz) {
-        auto graphExec = reinterpret_cast<const cuGraphLaunch_params *>(
+        auto graphExec = static_cast<const cuGraphLaunch_params *>(
                              callbackData->functionParams)
                              ->hGraph;
         uint32_t graphExecId = 0;
@@ -320,10 +320,10 @@ void CuptiProfiler::CuptiProfilerPimpl::callbackFn(void *userData,
         pImpl->pcSampling.start(callbackData->context);
     } else if (callbackData->callbackSite == CUPTI_API_EXIT) {
       if (profiler.isPCSamplingEnabled()) {
-        auto scopeId = profiler.correlation.externIdQueue.empty()
-                           ? Scope::DummyScopeId
-                           : profiler.correlation.externIdQueue.back();
-        pImpl->pcSampling.stop(callbackData->context, scopeId);
+        // XXX: Conservatively stop every GPU kernel for now
+        auto scopeId = profiler.correlation.externIdQueue.back();
+        pImpl->pcSampling.stop(callbackData->context, scopeId,
+                               !profiler.isOpInProgress());
       }
       threadState.exitOp();
       profiler.correlation.submit(callbackData->correlationId);

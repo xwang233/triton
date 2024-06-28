@@ -10,15 +10,8 @@ public:
   CuptiProfiler();
   virtual ~CuptiProfiler();
 
-  void enablePCSampling() { pcSamplingEnabled = true; }
-
-  void disablePCSampling() { pcSamplingEnabled = false; }
-
-  bool isPCSamplingEnabled() const { return pcSamplingEnabled; }
-
 private:
   struct CuptiProfilerPimpl;
-  bool pcSamplingEnabled{false};
 };
 
 } // namespace proton
