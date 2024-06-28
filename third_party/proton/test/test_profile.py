@@ -197,3 +197,23 @@ def test_hook():
         assert data[0]["children"][0]["children"][0]["frame"]["name"] == "foo_test_1ctas_1elems"
         assert data[0]["children"][0]["children"][0]["metrics"]["flops32"] == 1.0
         assert data[0]["children"][0]["children"][0]["metrics"]["Time (ns)"] > 0
+
+
+def test_pcsampling():
+
+    @triton.jit
+    def foo(x, y, size: tl.constexpr):
+        offs = tl.arange(0, size)
+        for _ in range(1000):
+            tl.store(y + offs, tl.load(x + offs))
+
+    with tempfile.NamedTemporaryFile(delete=True, suffix=".hatchet") as f:
+        proton.start(f.name.split(".")[0], hook="triton", backend="cupti_pcsampling")
+        x = torch.ones((1024, ), device="cuda", dtype=torch.float32)
+        y = torch.zeros_like(x)
+        with proton.scope("test0"):
+            foo[(1, )](x, y, x.size()[0], num_warps=4)
+        x.zero_()
+        proton.finalize()
+        data = json.load(f)
+        print(data)

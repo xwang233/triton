@@ -2,6 +2,7 @@
 #include "Data/Metric.h"
 #include "Driver/GPU/CudaApi.h"
 #include "Driver/GPU/CuptiApi.h"
+#include "Utility/Atomic.h"
 #include "Utility/Map.h"
 #include "Utility/String.h"
 #include <memory>
@@ -87,11 +88,10 @@ size_t matchStallReasonsToIndices(
   for (size_t i = 0; i < numStallReasons; i++) {
     bool notIssued = std::string(stallReasonNames[i]).find("not_issued") !=
                      std::string::npos;
-    auto cuptiStallName = replace(
-        replace(std::string(stallReasonNames[i]), "_", ""), "notissued", "");
+    auto cuptiStallName = replace(stallReasonNames[i], "_", "");
     for (size_t j = 0; j < PCSamplingMetric::PCSamplingMetricKind::Count; j++) {
       auto metricName = toLower(PCSamplingMetric().getValueName(j));
-      if (metricName.find(cuptiStallName) != std::string::npos) {
+      if (cuptiStallName.find(metricName) != std::string::npos) {
         if (notIssued)
           notIssuedStallReasonIndices.insert(i);
         stallReasonIndexToMetricIndex[stallReasonIndices[i]] = j;
@@ -101,17 +101,33 @@ size_t matchStallReasonsToIndices(
       }
     }
   }
-  int inValidIndex = -1;
+  int invalidIndex = -1;
   for (size_t i = 0; i < numStallReasons; i++) {
-    if (inValidIndex == -1 && !validIndex[i]) {
-      inValidIndex = i;
-    } else if (inValidIndex != -1 && validIndex[i]) {
-      std::swap(stallReasonIndices[inValidIndex], stallReasonIndices[i]);
-      validIndex[inValidIndex] = true;
-      inValidIndex = i;
+    if (invalidIndex == -1 && !validIndex[i]) {
+      invalidIndex = i;
+    } else if (invalidIndex != -1 && validIndex[i]) {
+      std::swap(stallReasonIndices[invalidIndex], stallReasonIndices[i]);
+      std::swap(stallReasonNames[invalidIndex], stallReasonNames[i]);
+      validIndex[invalidIndex] = true;
+      invalidIndex++;
     }
   }
   return numValidStalls;
+}
+
+CUpti_PCSamplingData allocPCSamplingData(size_t collectNumPCs,
+                                         size_t numValidStallReasons) {
+  CUpti_PCSamplingData pcSamplingData{
+      .size = sizeof(CUpti_PCSamplingData),
+      .collectNumPcs = collectNumPCs,
+      .pPcData = static_cast<CUpti_PCSamplingPCData *>(
+          std::calloc(collectNumPCs, sizeof(CUpti_PCSamplingPCData)))};
+  for (size_t i = 0; i < collectNumPCs; ++i) {
+    pcSamplingData.pPcData[i].stallReason =
+        static_cast<CUpti_PCSamplingStallReason *>(std::calloc(
+            numValidStallReasons, sizeof(CUpti_PCSamplingStallReason)));
+  }
+  return pcSamplingData;
 }
 
 void enablePCSampling(CUcontext context) {
@@ -203,12 +219,14 @@ CUpti_PCSamplingConfigurationInfo ConfigureData::configureSamplingPeriod() {
 }
 
 CUpti_PCSamplingConfigurationInfo ConfigureData::configureSamplingBuffer() {
-  CUpti_PCSamplingConfigurationInfo samplingPeriodInfo{};
-  samplingPeriodInfo.attributeType =
+  CUpti_PCSamplingConfigurationInfo sampleBufferInfo{};
+  sampleBufferInfo.attributeType =
       CUPTI_PC_SAMPLING_CONFIGURATION_ATTR_TYPE_SAMPLING_DATA_BUFFER;
-  samplingPeriodInfo.attributeData.samplingDataBufferData.samplingDataBuffer =
+  this->pcSamplingData =
+      allocPCSamplingData(ScratchBufferPCCount, numValidStallReasons);
+  sampleBufferInfo.attributeData.samplingDataBufferData.samplingDataBuffer =
       &this->pcSamplingData;
-  return samplingPeriodInfo;
+  return sampleBufferInfo;
 }
 
 CUpti_PCSamplingConfigurationInfo ConfigureData::configureScratchBuffer() {
@@ -248,20 +266,15 @@ CUpti_PCSamplingConfigurationInfo ConfigureData::configureCollectionMode() {
 }
 
 void ConfigureData::initialize(CUcontext context) {
-  if (this->initialized)
-    return;
-  this->initialized = true;
   this->context = context;
-  auto stallReasonsInfo = configureStallReasons();
-  auto samplingPeriodInfo = configureSamplingPeriod();
-  auto hardwareBufferInfo = configureHardwareBufferSize();
-  auto scratchBufferInfo = configureScratchBuffer();
-  auto samplingBufferInfo = configureSamplingBuffer();
-  auto startStopControlInfo = configureStartStopControl();
-  auto collectionModeInfo = configureCollectionMode();
-  std::vector<CUpti_PCSamplingConfigurationInfo> configurationInfos = {
-      stallReasonsInfo,   samplingPeriodInfo,   scratchBufferInfo,
-      hardwareBufferInfo, startStopControlInfo, collectionModeInfo};
+  cupti::getContextId<true>(context, &contextId);
+  configurationInfos.emplace_back(configureStallReasons());
+  configurationInfos.emplace_back(configureSamplingPeriod());
+  configurationInfos.emplace_back(configureHardwareBufferSize());
+  configurationInfos.emplace_back(configureScratchBuffer());
+  configurationInfos.emplace_back(configureSamplingBuffer());
+  configurationInfos.emplace_back(configureStartStopControl());
+  // configurationInfos.emplace_back(configureCollectionMode());
   setConfigurationAttribute(context, configurationInfos);
 }
 
@@ -276,16 +289,33 @@ CubinData *CuptiPCSampling::getCubinData(uint64_t cubinCrc) {
 }
 
 void CuptiPCSampling::initialize(CUcontext context) {
-  auto *configureData = getConfigureData(context);
-  configureData->initialize(context);
+  uint32_t contextId = 0;
+  cupti::getContextId<true>(context, &contextId);
+  if (contextInitialized.contain(contextId))
+    return;
+  std::unique_lock<std::mutex> lock(contextMutex);
+  if (contextInitialized.contain(contextId))
+    return;
   enablePCSampling(context);
+  getConfigureData(context)->initialize(context);
+  contextInitialized.insert(contextId);
 }
 
 void CuptiPCSampling::start(CUcontext context) {
   if (pcSamplingStarted)
     return;
+  std::unique_lock<std::mutex> lock(pcSamplingMutex);
+  if (pcSamplingStarted)
+    return;
+  initialize(context);
+  // Ensure all previous operations are completed
+  cuda::ctxSynchronize<true>();
+  // Clean up previous records
   auto *configureData = getConfigureData(context);
+  configureData->pcSamplingData.totalNumPcs = 0;
+  configureData->pcSamplingData.remainingNumPcs = 0;
   startPCSampling(context);
+  pcSamplingStarted = true;
 }
 
 void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
@@ -312,6 +342,9 @@ void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
       auto &lineInfo = cubinData->lineInfo[key];
       for (size_t j = 0; j < pcData->stallReasonCount; ++j) {
         auto *stallReason = &pcData->stallReason[j];
+        if (!configureData->stallReasonIndexToMetricIndex.count(
+                stallReason->pcSamplingStallReasonIndex))
+          continue;
         for (auto *data : dataSet) {
           auto scopeId = externId;
           if (isAPI)
@@ -331,12 +364,15 @@ void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
         }
       }
     }
-    // Get next data
-    getPCSamplingData(configureData->context, pcSamplingData);
+    if (pcSamplingData->remainingNumPcs > 0)
+      getPCSamplingData(configureData->context, pcSamplingData);
   }
 }
 
 void CuptiPCSampling::stop(CUcontext context, uint64_t externId, bool isAPI) {
+  if (!pcSamplingStarted)
+    return;
+  std::unique_lock<std::mutex> lock(pcSamplingMutex);
   if (!pcSamplingStarted)
     return;
   stopPCSampling(context);
@@ -346,6 +382,10 @@ void CuptiPCSampling::stop(CUcontext context, uint64_t externId, bool isAPI) {
 }
 
 void CuptiPCSampling::finalize(CUcontext context) {
+  auto *configureData = getConfigureData(context);
+  auto contextId = configureData->contextId;
+  contextIdToConfigureData.erase(contextId);
+  contextInitialized.erase(contextId);
   disablePCSampling(context);
 }
 

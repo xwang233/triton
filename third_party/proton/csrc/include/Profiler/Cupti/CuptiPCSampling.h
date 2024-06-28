@@ -60,16 +60,16 @@ struct ConfigureData {
   CUpti_PCSamplingConfigurationInfo configureCollectionMode();
 
   // The amount of data reserved on the GPU
-  static constexpr uint32_t HardwareBufferSize = 512 * 1024 * 1024;
+  static constexpr size_t HardwareBufferSize = 128 * 1024 * 1024;
   // The amount of data copied from the hardware buffer each time
-  static constexpr uint32_t ScratchBufferSize = 16 * 1024 * 1024;
+  static constexpr size_t ScratchBufferSize = 16 * 1024 * 1024;
   // The number of PCs copied from the scratch buffer each time
-  static constexpr uint32_t ScratchBufferPCCount = 4096;
+  static constexpr size_t ScratchBufferPCCount = 1024;
   // The sampling period in cycles = 2^frequency
   static constexpr uint32_t DefaultFrequency = 10;
 
-  bool initialized{false};
   CUcontext context{};
+  uint32_t contextId;
   uint32_t numStallReasons{};
   uint32_t numValidStallReasons{};
   char **stallReasonNames{};
@@ -77,6 +77,9 @@ struct ConfigureData {
   std::map<size_t, size_t> stallReasonIndexToMetricIndex{};
   std::set<size_t> notIssuedStallReasonIndices{};
   CUpti_PCSamplingData pcSamplingData{};
+  // The memory storing configuration information has to be kept alive during
+  // the profiling session
+  std::vector<CUpti_PCSamplingConfigurationInfo> configurationInfos;
 };
 
 class CuptiPCSampling : public Singleton<CuptiPCSampling> {
@@ -105,10 +108,13 @@ private:
   void processPCSamplingData(ConfigureData *configureData, uint64_t externId,
                              bool isAPI);
 
-  ThreadSafeMap<size_t, ConfigureData> contextIdToConfigureData;
+  ThreadSafeMap<uint32_t, ConfigureData> contextIdToConfigureData;
   ThreadSafeMap<size_t, CubinData> cubinCrcToCubinData;
+  ThreadSafeSet<uint32_t> contextInitialized;
 
   std::atomic<bool> pcSamplingStarted{false};
+  std::mutex pcSamplingMutex{};
+  std::mutex contextMutex{};
 };
 
 } // namespace proton

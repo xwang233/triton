@@ -152,24 +152,25 @@ class PCSamplingMetric : public Metric {
 public:
   enum PCSamplingMetricKind : int {
     NumSamples,
-    NumStallSamples,
-    StallBranchResolving,
-    StallNoInstruction,
-    StallShortScoreboard,
-    StallWait,
-    StallLongScoreboard,
-    StallTexThrottle,
-    StallBarrier,
-    StallMembar,
-    StallIMCMiss,
-    StallMIOThrottle,
-    StallMathPipeThrottle,
-    StallDrain,
-    StallLGThrottle,
-    StallNotSelected,
-    StallMisc,
-    StallDispatchStall,
-    StallSleeping,
+    NumStalledSamples,
+    StalledBranchResolving,
+    StalledNoInstruction,
+    StalledShortScoreboard,
+    StalledWait,
+    StalledLongScoreboard,
+    StalledTexThrottle,
+    StalledBarrier,
+    StalledMembar,
+    StalledIMCMiss,
+    StalledMIOThrottle,
+    StalledMathPipeThrottle,
+    StalledDrain,
+    StalledLGThrottle,
+    StalledNotSelected,
+    StalledMisc,
+    StalledDispatchStall,
+    StalledSleeping,
+    StalledSelected,
     Count,
   };
 
@@ -181,7 +182,7 @@ public:
       : PCSamplingMetric() {
     this->values[kind] = stallSamples;
     this->values[NumSamples] = samples;
-    this->values[NumStallSamples] = stallSamples;
+    this->values[NumStalledSamples] = stallSamples;
   }
 
   virtual const std::string getName() const { return "PCSamplingMetric"; }
@@ -195,24 +196,25 @@ public:
 private:
   const static inline std::string VALUE_NAMES[PCSamplingMetricKind::Count] = {
       "NumSamples",
-      "NumStallSamples",
-      "StallBranchResolving",
-      "StallNoInstruction",
-      "StallShortScoreboard",
-      "StallWait",
-      "StallLongScoreboard",
-      "StallTexThrottle",
-      "StallBarrier",
-      "StallMembar",
-      "StallIMCMiss",
-      "StallMIOThrottle",
-      "StallMathPipeThrottle",
-      "StallDrain",
-      "StallLGThrottle",
-      "StallNotSelected",
-      "StallMisc",
-      "StallDispatchStall",
-      "StallSleeping",
+      "NumStalledSamples",
+      "StalledBranchResolving",
+      "StalledNoInstruction",
+      "StalledShortScoreboard",
+      "StalledWait",
+      "StalledLongScoreboard",
+      "StalledTexThrottle",
+      "StalledBarrier",
+      "StalledMembar",
+      "StalledIMCMiss",
+      "StalledMIOThrottle",
+      "StalledMathPipeThrottle",
+      "StalledDrain",
+      "StalledLGThrottle",
+      "StalledNotSelected",
+      "StalledMisc",
+      "StalledDispatchStall",
+      "StalledSleeping",
+      "StalledSelected",
   };
 };
 
