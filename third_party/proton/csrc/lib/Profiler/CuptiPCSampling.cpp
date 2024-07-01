@@ -44,8 +44,8 @@ getSassToSourceCorrelation(const char *functionName, uint64_t pcOffset,
       .cubinSize = cubinSize,
       .lineNumber = 0,
       .pcOffset = pcOffset,
-      .fileName = nullptr,
-      .dirName = nullptr,
+      .fileName = NULL,
+      .dirName = NULL,
   };
   cupti::getSassToSourceCorrelation<true>(&sassToSourceParams);
   return std::make_tuple(sassToSourceParams.lineNumber,
@@ -88,12 +88,18 @@ size_t matchStallReasonsToIndices(
   for (size_t i = 0; i < numStallReasons; i++) {
     bool notIssued = std::string(stallReasonNames[i]).find("not_issued") !=
                      std::string::npos;
+    bool count = std::string(stallReasonNames[i]).find("sample_count") !=
+                 std::string::npos;
+    bool dropped =
+        std::string(stallReasonNames[i]).find("dropped") != std::string::npos;
+    // Count and dropped will be collected by default in CUPTI, so we don't want
+    // to ignore
+    if (!(notIssued || count || dropped))
+      return;
     auto cuptiStallName = replace(stallReasonNames[i], "_", "");
     for (size_t j = 0; j < PCSamplingMetric::PCSamplingMetricKind::Count; j++) {
       auto metricName = toLower(PCSamplingMetric().getValueName(j));
       if (cuptiStallName.find(metricName) != std::string::npos) {
-        if (notIssued)
-          notIssuedStallReasonIndices.insert(i);
         stallReasonIndexToMetricIndex[stallReasonIndices[i]] = j;
         validIndex[i] = true;
         numValidStalls++;
@@ -117,11 +123,20 @@ size_t matchStallReasonsToIndices(
 
 CUpti_PCSamplingData allocPCSamplingData(size_t collectNumPCs,
                                          size_t numValidStallReasons) {
+// Check cuda api version >= 12.4
+// If so, we subtract 4 bytes from the size of CUpti_PCSamplingPCData
+// because it introduces a new field at the end of the struct, which is not
+// compatible with the previous versions.
+#if CUDA_VERSION >= 12040
+  size_t pcDataSize = sizeof(CUpti_PCSamplingPCData) - sizeof(uint32_t);
+#else
+  size_t pcDataSize = sizeof(CUpti_PCSamplingPCData);
+#endif
   CUpti_PCSamplingData pcSamplingData{
       .size = sizeof(CUpti_PCSamplingData),
       .collectNumPcs = collectNumPCs,
       .pPcData = static_cast<CUpti_PCSamplingPCData *>(
-          std::calloc(collectNumPCs, sizeof(CUpti_PCSamplingPCData)))};
+          std::calloc(collectNumPCs, pcDataSize))};
   for (size_t i = 0; i < collectNumPCs; ++i) {
     pcSamplingData.pPcData[i].stallReason =
         static_cast<CUpti_PCSamplingStallReason *>(std::calloc(
@@ -274,7 +289,7 @@ void ConfigureData::initialize(CUcontext context) {
   configurationInfos.emplace_back(configureScratchBuffer());
   configurationInfos.emplace_back(configureSamplingBuffer());
   configurationInfos.emplace_back(configureStartStopControl());
-  // configurationInfos.emplace_back(configureCollectionMode());
+  configurationInfos.emplace_back(configureCollectionMode());
   setConfigurationAttribute(context, configurationInfos);
 }
 
@@ -344,7 +359,7 @@ void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
         auto *stallReason = &pcData->stallReason[j];
         if (!configureData->stallReasonIndexToMetricIndex.count(
                 stallReason->pcSamplingStallReasonIndex))
-          continue;
+          throw std::runtime_error("Invalid stall reason index");
         for (auto *data : dataSet) {
           auto scopeId = externId;
           if (isAPI)
@@ -353,19 +368,15 @@ void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
               configureData->stallReasonIndexToMetricIndex
                   [stallReason->pcSamplingStallReasonIndex]);
           auto samples = stallReason->samples;
-          auto notIssuedSamples =
-              configureData->notIssuedStallReasonIndices.count(
-                  stallReason->pcSamplingStallReasonIndex)
-                  ? samples
-                  : 0;
-          auto metric = std::make_shared<PCSamplingMetric>(metricKind, samples,
-                                                           notIssuedSamples);
+          auto metric = std::make_shared<PCSamplingMetric>(metricKind, samples);
           data->addMetric(scopeId, metric);
         }
       }
     }
     if (pcSamplingData->remainingNumPcs > 0)
       getPCSamplingData(configureData->context, pcSamplingData);
+    else
+      break;
   }
 }
 

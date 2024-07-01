@@ -41,12 +41,22 @@ struct ConfigureData {
   ConfigureData() = default;
 
   ~ConfigureData() {
-    for (size_t i = 0; i < numStallReasons; i++)
-      std::free(stallReasonNames[i]);
-    if (stallReasonNames)
+    if (stallReasonNames) {
+      for (size_t i = 0; i < numStallReasons; i++) {
+        if (stallReasonNames[i])
+          std::free(stallReasonNames[i]);
+      }
       std::free(stallReasonNames);
+    }
     if (stallReasonIndices)
       std::free(stallReasonIndices);
+    if (pcSamplingData.pPcData) {
+      for (size_t i = 0; i < ScratchBufferPCCount; i++) {
+        if (pcSamplingData.pPcData[i].stallReason)
+          std::free(pcSamplingData.pPcData[i].stallReason);
+      }
+      std::free(pcSamplingData.pPcData);
+    }
   }
 
   void initialize(CUcontext context);

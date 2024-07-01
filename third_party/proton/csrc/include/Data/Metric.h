@@ -151,8 +151,9 @@ private:
 class PCSamplingMetric : public Metric {
 public:
   enum PCSamplingMetricKind : int {
-    NumSamples,
-    NumStalledSamples,
+    SampleCount,
+    StalledSampleCount,
+    Dropped,
     StalledBranchResolving,
     StalledNoInstruction,
     StalledShortScoreboard,
@@ -177,12 +178,12 @@ public:
   PCSamplingMetric()
       : Metric(MetricKind::Kernel, PCSamplingMetricKind::Count) {}
 
-  PCSamplingMetric(PCSamplingMetricKind kind, uint64_t samples,
-                   uint64_t stallSamples)
+  PCSamplingMetric(PCSamplingMetricKind kind, uint64_t samples)
       : PCSamplingMetric() {
-    this->values[kind] = stallSamples;
-    this->values[NumSamples] = samples;
-    this->values[NumStalledSamples] = stallSamples;
+    this->values[kind] = samples;
+    if (kind != PCSamplingMetricKind::SampleCount &&
+        kind != PCSamplingMetricKind::Dropped)
+      this->values[PCSamplingMetricKind::StalledSampleCount] = samples;
   }
 
   virtual const std::string getName() const { return "PCSamplingMetric"; }
@@ -195,8 +196,9 @@ public:
 
 private:
   const static inline std::string VALUE_NAMES[PCSamplingMetricKind::Count] = {
-      "NumSamples",
-      "NumStalledSamples",
+      "SampleCount",
+      "StalledSampleCount",
+      "Dropped",
       "StalledBranchResolving",
       "StalledNoInstruction",
       "StalledShortScoreboard",
