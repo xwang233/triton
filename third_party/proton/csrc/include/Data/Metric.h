@@ -7,7 +7,7 @@
 
 namespace proton {
 
-enum class MetricKind { Flexible, Kernel, Count };
+enum class MetricKind { Flexible, Kernel, PCSampling, Count };
 
 using MetricValueType = std::variant<uint64_t, int64_t, double, std::string>;
 
@@ -176,7 +176,7 @@ public:
   };
 
   PCSamplingMetric()
-      : Metric(MetricKind::Kernel, PCSamplingMetricKind::Count) {}
+      : Metric(MetricKind::PCSampling, PCSamplingMetricKind::Count) {}
 
   PCSamplingMetric(PCSamplingMetricKind kind, uint64_t samples)
       : PCSamplingMetric() {
