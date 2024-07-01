@@ -95,7 +95,7 @@ size_t matchStallReasonsToIndices(
     // Count and dropped will be collected by default in CUPTI, so we don't want
     // to ignore
     if (!(notIssued || count || dropped))
-      return;
+      continue;
     auto cuptiStallName = replace(stallReasonNames[i], "_", "");
     for (size_t j = 0; j < PCSamplingMetric::PCSamplingMetricKind::Count; j++) {
       auto metricName = toLower(PCSamplingMetric().getValueName(j));
