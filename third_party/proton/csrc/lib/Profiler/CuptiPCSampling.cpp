@@ -47,7 +47,7 @@ getSassToSourceCorrelation(const char *functionName, uint64_t pcOffset,
       .fileName = NULL,
       .dirName = NULL,
   };
-  cupti::getSassToSourceCorrelation<true>(&sassToSourceParams);
+  cupti::getSassToSourceCorrelation<false>(&sassToSourceParams);
   return std::make_tuple(sassToSourceParams.lineNumber,
                          sassToSourceParams.fileName,
                          sassToSourceParams.dirName);
@@ -350,9 +350,15 @@ void CuptiPCSampling::processPCSamplingData(ConfigureData *configureData,
         auto [lineNumber, fileName, dirName] =
             getSassToSourceCorrelation(pcData->functionName, pcData->pcOffset,
                                        cubinData->cubin, cubinData->cubinSize);
-        cubinData->lineInfo[key] = CubinData::LineInfoValue{
-            lineNumber, pcData->functionName,
-            std::string(dirName) + "/" + std::string(fileName)};
+        if (fileName == NULL) {
+          // No line info
+          cubinData->lineInfo[key] =
+              CubinData::LineInfoValue{0, pcData->functionName, "Unknown"};
+        } else {
+          cubinData->lineInfo[key] = CubinData::LineInfoValue{
+              lineNumber, pcData->functionName,
+              std::string(dirName) + "/" + std::string(fileName)};
+        }
       }
       auto &lineInfo = cubinData->lineInfo[key];
       for (size_t j = 0; j < pcData->stallReasonCount; ++j) {
